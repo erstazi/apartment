@@ -1,6 +1,115 @@
+
 local S = minetest.get_translator("apartment")
 local gui = flow.widgets
 local p = {}
+
+-- Get the renter's last login.
+local function get_last_login(player_name)
+	if not player_name or player_name == "" then
+		return S("Never")
+	end
+
+	local auth_handler = minetest.get_auth_handler()
+	if not auth_handler or not auth_handler.get_auth then
+		return S("Unknown")
+	end
+
+	local auth = auth_handler.get_auth(player_name)
+
+	if not auth or not auth.last_login or auth.last_login <= 0 then
+		return S("Never")
+	end
+
+	return os.date("%Y-%m-%d %H:%M:%S", auth.last_login)
+end
+
+-- Identify chest nodes.
+local function is_chest(node_name)
+	local registered = minetest.registered_nodes[node_name]
+
+	if not registered then
+		return false
+	end
+
+	return minetest.get_item_group(node_name, "chest") > 0
+		or node_name:lower():find("chest", 1, true) ~= nil
+end
+
+-- Count individual items in all chests inside an apartment.
+local function count_apartment_chest_items(pos, meta)
+	local node = minetest.get_node(pos)
+
+	local size_up    = meta:get_int("size_up")
+	local size_down  = meta:get_int("size_down")
+	local size_right = meta:get_int("size_right")
+	local size_left  = meta:get_int("size_left")
+	local size_front = meta:get_int("size_front")
+	local size_back  = meta:get_int("size_back")
+
+	local x1 = pos.x
+	local x2 = pos.x
+	local z1 = pos.z
+	local z2 = pos.z
+
+	-- Use the same boundary calculations as apartment.rent().
+	if node.param2 == 0 then
+		-- Z gets larger
+		x1 = x1 - size_left
+		x2 = x2 + size_right
+		z1 = z1 - size_front
+		z2 = z2 + size_back
+
+	elseif node.param2 == 1 then
+		-- X gets larger
+		z1 = z1 - size_right
+		z2 = z2 + size_left
+		x1 = x1 - size_front
+		x2 = x2 + size_back
+
+	elseif node.param2 == 2 then
+		-- Z gets smaller
+		x1 = x1 - size_right
+		x2 = x2 + size_left
+		z1 = z1 - size_back
+		z2 = z2 + size_front
+
+	elseif node.param2 == 3 then
+		-- X gets smaller
+		z1 = z1 - size_left
+		z2 = z2 + size_right
+		x1 = x1 - size_back
+		x2 = x2 + size_front
+	end
+
+	local y1 = pos.y - size_down
+	local y2 = pos.y + size_up
+
+	local total_items = 0
+
+	for x = x1, x2 do
+		for y = y1, y2 do
+			for z = z1, z2 do
+				local chest_pos = {x = x, y = y, z = z}
+				local chest_node = minetest.get_node_or_nil(chest_pos)
+
+				if chest_node and is_chest(chest_node.name) then
+					local inv = minetest.get_meta(chest_pos):get_inventory()
+					local lists = inv:get_lists()
+
+					if lists then
+						for _, list in pairs(lists) do
+							for _, stack in ipairs(list) do
+								total_items = total_items + stack:get_count()
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return total_items
+end
 
 
 p.configure_gui = flow.make_gui(function(player, ctx)
@@ -175,6 +284,22 @@ p.panel_control = flow.make_gui(function(player, ctx)
 	local descr = meta:get_string('descr')
 	local category = meta:get_string('category')
 
+	-- Renter information.
+	local renter_active = owner ~= "" and owner ~= original_owner
+
+	local last_login = "-"
+	local chest_items = "-"
+	local can_view_chest_items = minetest.check_player_privs(name, {
+		apartment_unrent = true
+	})
+
+	if renter_active then
+		last_login = get_last_login(owner)
+		if can_view_chest_items then
+			chest_items = tostring(count_apartment_chest_items(pos, meta))
+		end
+	end
+
 	local btn = gui.Label { label = S("This apartment \nhave been rented.") }
 	if not (apartment.apartments[category] and apartment.apartments[category][descr]) then
 		btn = gui.Label { label = S("This apartment \nwas glitched.") }
@@ -278,7 +403,7 @@ p.panel_control = flow.make_gui(function(player, ctx)
 							owner, descr, category))
 				else
 					minetest.chat_send_player(name,
-						S('Something went wrong when throwing @1 out of the apartment @2@@@3. (@4)', 
+						S('Something went wrong when throwing @1 out of the apartment @2@@@3. (@4)',
 							owner, descr, category, msg))
 				end
 				return true
@@ -306,6 +431,24 @@ p.panel_control = flow.make_gui(function(player, ctx)
 			gui.Label { label = S("Owner: @1", original_owner), w = 1, expand = true },
 			gui.Label { label = S("Now rented by: @1", owner_disp), w = 1, expand = true },
 		},
+
+		-- Renter information.
+		gui.Box { w = 1, h = 0.05, color = "grey" },
+		gui.Label { label = S("Renter Information") },
+		gui.HBox {
+			gui.Label {
+				label = S("Last login: @1", last_login),
+				w = 1, expand = true
+			},
+			can_view_chest_items and gui.Label {
+				label = S("Items in chests: @1", chest_items),
+				w = 1, expand = true
+			} or gui.Label {
+				label = "",
+				w = 1, expand = true
+			},
+		},
+
 		gui.Box { w = 1, h = 0.05, color = "grey" },
 		gui.Label { label = S("The apartment extends this many blocks from this panel:") },
 		gui.HBox {
